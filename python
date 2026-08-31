@@ -1,0 +1,1654 @@
+# pyrefly: ignore [missing-import]
+
+import platform
+import shutil
+import subprocess
+
+import ollama
+
+# pyrefly: ignore [missing-import]
+from memory import Memory
+
+# pyrefly: ignore [missing-import]
+from tools.apps import (
+    open_calculator,
+    open_command_prompt,
+    open_file_explorer,
+    open_notepad,
+    open_powershell,
+)
+
+
+class TARS:
+    """
+    TARS - Local AI desktop assistant.
+
+    Designed to run with Ollama and local models.
+    """
+
+    # ==========================================================
+    # INITIALIZATION
+    # ==========================================================
+
+    def __init__(self):
+
+        # ------------------------------------------------------
+        # MODELS
+        # ------------------------------------------------------
+
+        self.fast_model = "qwen3:1.7b"
+        self.smart_model = "qwen3:4b"
+        self.memory_model = "qwen3:1.7b"
+
+        # ------------------------------------------------------
+        # MEMORY
+        # ------------------------------------------------------
+
+        self.memory = Memory()
+
+        # ------------------------------------------------------
+        # PERSONALITY
+        # ------------------------------------------------------
+
+        self.system_prompt = """
+You are TARS, a local AI desktop assistant.
+
+PERSONALITY:
+- Intelligent, calm, witty, and slightly sarcastic.
+- Friendly and natural.
+- Talk like a real voice assistant.
+- Do not sound like a customer-service bot.
+- Keep simple answers short.
+- Give detailed explanations when requested.
+- Use occasional humor.
+- Do not spam emojis.
+- You may occasionally use an appropriate emoji.
+- Never explain an emoji unless the user specifically asks.
+- Never reveal internal reasoning.
+- Never pretend a tool worked if it failed.
+
+CONVERSATION:
+- Have natural casual conversations.
+- Respond directly to what the user says.
+- Avoid unnecessary explanations.
+- Keep voice responses reasonably concise.
+
+MEMORY:
+- You have persistent local memory.
+- Important long-term information can be remembered.
+- Do not claim to remember something unless it is actually stored.
+"""
+
+        # ------------------------------------------------------
+        # CONVERSATION HISTORY
+        # ------------------------------------------------------
+
+        self.messages = [
+            {
+                "role": "system",
+                "content": self.system_prompt,
+            }
+        ]
+
+        # ------------------------------------------------------
+        # TOOLS
+        # ------------------------------------------------------
+
+        self.tools = self.build_tools()
+
+    # ==========================================================
+    # TOOL DEFINITIONS
+    # ==========================================================
+
+    def build_tools(self):
+        """Return the tools available to the smart model."""
+
+        return [
+            {
+                "type": "function",
+                "function": {
+                    "name": "get_cpu_info",
+                    "description": "Get the exact CPU model of this computer.",
+                    "parameters": {
+                        "type": "object",
+                        "properties": {},
+                    },
+                },
+            },
+            {
+                "type": "function",
+                "function": {
+                    "name": "get_ram_info",
+                    "description": "Get the current RAM usage.",
+                    "parameters": {
+                        "type": "object",
+                        "properties": {},
+                    },
+                },
+            },
+            {
+                "type": "function",
+                "function": {
+                    "name": "get_disk_info",
+                    "description": "Get disk storage information.",
+                    "parameters": {
+                        "type": "object",
+                        "properties": {},
+                    },
+                },
+            },
+            {
+                "type": "function",
+                "function": {
+                    "name": "get_os_info",
+                    "description": "Get operating system information.",
+                    "parameters": {
+                        "type": "object",
+                        "properties": {},
+                    },
+                },
+            },
+            {
+                "type": "function",
+                "function": {
+                    "name": "get_battery_info",
+                    "description": "Get battery percentage and charging status.",
+                    "parameters": {
+                        "type": "object",
+                        "properties": {},
+                    },
+                },
+            },
+            {
+                "type": "function",
+                "function": {
+                    "name": "open_brave",
+                    "description": "Open the Brave web browser.",
+                    "parameters": {
+                        "type": "object",
+                        "properties": {},
+                    },
+                },
+            },
+            {
+                "type": "function",
+                "function": {
+                    "name": "open_calculator",
+                    "description": "Open the Windows Calculator application.",
+                    "parameters": {
+                        "type": "object",
+                        "properties": {},
+                    },
+                },
+            },
+            {
+                "type": "function",
+                "function": {
+                    "name": "open_notepad",
+                    "description": "Open Windows Notepad.",
+                    "parameters": {
+                        "type": "object",
+                        "properties": {},
+                    },
+                },
+            },
+            {
+                "type": "function",
+                "function": {
+                    "name": "open_file_explorer",
+                    "description": "Open Windows File Explorer.",
+                    "parameters": {
+                        "type": "object",
+                        "properties": {},
+                    },
+                },
+            },
+            {
+                "type": "function",
+                "function": {
+                    "name": "open_command_prompt",
+                    "description": "Open the Windows Command Prompt.",
+                    "parameters": {
+                        "type": "object",
+                        "properties": {},
+                    },
+                },
+            },
+            {
+                "type": "function",
+                "function": {
+                    "name": "open_powershell",
+                    "description": "Open Windows PowerShell.",
+                    "parameters": {
+                        "type": "object",
+                        "properties": {},
+                    },
+                },
+            },
+            {
+                "type": "function",
+                "function": {
+                    "name": "save_memory",
+                    "description": "Save an important long-term fact about the user.",
+                    "parameters": {
+                        "type": "object",
+                        "properties": {
+                            "memory": {
+                                "type": "string",
+                                "description": "Important information to remember.",
+                            }
+                        },
+                        "required": ["memory"],
+                    },
+                },
+            },
+            {
+                "type": "function",
+                "function": {
+                    "name": "search_memory",
+                    "description": "Search TARS's long-term memory.",
+                    "parameters": {
+                        "type": "object",
+                        "properties": {
+                            "keyword": {
+                                "type": "string",
+                                "description": "Keyword to search for.",
+                            }
+                        },
+                        "required": ["keyword"],
+                    },
+                },
+            },
+        ]
+
+    # ==========================================================
+    # MODEL ROUTER
+    # ==========================================================
+
+    def choose_model(self, user_input):
+        """Choose between the fast and smart model."""
+
+        text = user_input.lower().strip()
+
+        tool_keywords = [
+            "cpu",
+            "processor",
+            "ram",
+            "memory usage",
+            "disk",
+            "storage",
+            "battery",
+            "operating system",
+            " os ",
+            "open brave",
+            "open browser",
+            "launch brave",
+            "launch browser",
+            "open calculator",
+            "open notepad",
+            "open file explorer",
+            "open command prompt",
+            "open powershell",
+        ]
+
+        for keyword in tool_keywords:
+            if keyword in text:
+                return self.smart_model
+
+        complex_keywords = [
+            "explain",
+            "analyze",
+            "debug",
+            "write code",
+            "create code",
+            "program",
+            "how does",
+            "how do",
+            "why does",
+            "why do",
+            "compare",
+            "difference between",
+            "architecture",
+            "design",
+            "calculate",
+            "solve",
+            "implement",
+            "build",
+            "configure",
+            "install",
+            "error",
+            "problem",
+            "issue",
+        ]
+
+        for keyword in complex_keywords:
+            if keyword in text:
+                return self.smart_model
+
+        return self.fast_model
+
+    # ==========================================================
+    # MEMORY DETECTION
+    # ==========================================================
+
+    def check_for_memory(self, user_input):
+        """
+        Decide whether the current message contains
+        information worth saving permanently.
+        """
+
+        text = user_input.lower().strip()
+
+        memory_triggers = [
+            "my name is",
+            "i am",
+            "i'm",
+            "i live",
+            "i study",
+            "i work",
+            "i use",
+            "i like",
+            "i love",
+            "i prefer",
+            "my favorite",
+            "my favourite",
+            "remember that",
+            "remember this",
+            "don't forget",
+            "do not forget",
+            "keep in mind",
+            "i'm building",
+            "i am building",
+            "my project",
+            "my goal",
+        ]
+
+        possible_memory = any(
+            trigger in text
+            for trigger in memory_triggers
+        )
+
+        if not possible_memory:
+            return
+
+        try:
+
+            memory_prompt = f"""
+You are the memory manager for TARS.
+
+Determine whether this user message contains
+important information that should be remembered
+for future conversations.
+
+User message:
+"{user_input}"
+
+SAVE information such as:
+- Name
+- Long-term projects
+- Important goals
+- Important preferences
+- Important computer/software setup
+- Information explicitly requested to be remembered
+
+DO NOT SAVE:
+- Temporary information
+- Casual conversation
+- One-time requests
+- Questions
+- Jokes
+
+Return ONLY one of these formats:
+
+SAVE: <short memory>
+
+OR:
+
+IGNORE
+"""
+
+            response = ollama.chat(
+                model=self.memory_model,
+                messages=[
+                    {
+                        "role": "user",
+                        "content": memory_prompt,
+                    }
+                ],
+                think=False,
+            )
+
+            result = response["message"].get(
+                "content",
+                "",
+            ).strip()
+
+            if result.upper().startswith("SAVE:"):
+
+                memory_text = result[
+                    len("SAVE:")
+                ].strip()
+
+                if memory_text:
+                    self.memory.save(memory_text)
+
+                    print(
+                        f"🧠 Memory saved: {memory_text}"
+                    )
+
+        except Exception as error:
+
+            # Memory must never crash TARS.
+            print(
+                f"⚠️ Memory check failed: {error}"
+            )
+
+    # ==========================================================
+    # CPU
+    # ==========================================================
+
+    def get_cpu_info(self):
+
+        try:
+
+            # Linux / WSL
+            if shutil.which("lscpu"):
+
+                result = subprocess.run(
+                    ["lscpu"],
+                    capture_output=True,
+                    text=True,
+                    check=False,
+                )
+
+                for line in result.stdout.splitlines():
+
+                    if "Model name:" in line:
+                        return line.split(
+                            ":",
+                            1,
+                        )[1].strip()
+
+            # Windows fallback
+            if platform.system() == "Windows":
+
+                result = subprocess.run(
+                    [
+                        "wmic",
+                        "cpu",
+                        "get",
+                        "name",
+                    ],
+                    capture_output=True,
+                    text=True,
+                    check=False,
+                )
+
+                lines = [
+                    line.strip()
+                    for line in result.stdout.splitlines()
+                    if line.strip()
+                ]
+
+                if len(lines) > 1:
+                    return lines[1]
+
+            return "CPU information unavailable."
+
+        except Exception as error:
+
+            return f"CPU error: {error}"
+
+    # ==========================================================
+    # RAM
+    # ==========================================================
+
+    def get_ram_info(self):
+
+        try:
+
+            # Linux / WSL
+            if shutil.which("free"):
+
+                result = subprocess.run(
+                    ["free", "-h"],
+                    capture_output=True,
+                    text=True,
+                    check=False,
+                )
+
+                for line in result.stdout.splitlines():
+
+                    if line.startswith("Mem:"):
+
+                        parts = line.split()
+
+                        if len(parts) >= 7:
+
+                            return (
+                                f"Total RAM: {parts[1]}, "
+                                f"Used: {parts[2]}, "
+                                f"Available: {parts[6]}"
+                            )
+
+            # Windows fallback
+            if platform.system() == "Windows":
+
+                result = subprocess.run(
+                    [
+                        "wmic",
+                        "OS",
+                        "get",
+                        "TotalVisibleMemorySize,"
+                        "FreePhysicalMemory",
+                        "/Value",
+                    ],
+                    capture_output=True,
+                    text=True,
+                    check=False,
+                )
+
+                values = {}
+
+                for line in result.stdout.splitlines():
+
+                    if "=" in line:
+
+                        key, value = line.split(
+                            "=",
+                            1,
+                        )
+
+                        values[key.strip()] = value.strip()
+
+                total = values.get(
+                    "TotalVisibleMemorySize"
+                )
+
+                free = values.get(
+                    "FreePhysicalMemory"
+                )
+
+                if total and free:
+
+                    total_gb = (
+                        int(total) / 1024 / 1024
+                    )
+
+                    free_gb = (
+                        int(free) / 1024 / 1024
+                    )
+
+                    used_gb = (
+                        total_gb - free_gb
+                    )
+
+                    return (
+                        f"Total RAM: {total_gb:.1f} GB, "
+                        f"Used: {used_gb:.1f} GB, "
+                        f"Available: {free_gb:.1f} GB"
+                    )
+
+            return "RAM information unavailable."
+
+        except Exception as error:
+
+            return f"RAM error: {error}"
+
+    # ==========================================================
+    # DISK
+    # ==========================================================
+
+    def get_disk_info(self):
+
+        try:
+
+            path = "/"
+
+            # If actually running on Windows
+            if platform.system() == "Windows":
+                path = "C:\\"
+
+            total, used, free = shutil.disk_usage(path)
+
+            total_gb = total / (1024 ** 3)
+            used_gb = used / (1024 ** 3)
+            free_gb = free / (1024 ** 3)
+
+            return (
+                f"Disk total: {total_gb:.1f} GB, "
+                f"used: {used_gb:.1f} GB, "
+                f"free: {free_gb:.1f} GB"
+            )
+
+        except Exception as error:
+
+            return f"Disk error: {error}"
+
+    # ==========================================================
+    # OPERATING SYSTEM
+    # ==========================================================
+
+    def get_os_info(self):
+
+        try:
+
+            return (
+                f"System: {platform.system()}, "
+                f"Release: {platform.release()}, "
+                f"Architecture: {platform.machine()}"
+            )
+
+        except Exception as error:
+
+            return f"OS error: {error}"
+
+    # ==========================================================
+    # BATTERY
+    # ==========================================================
+
+    def get_battery_info(self):
+
+        try:
+
+            # Linux / WSL
+            battery_path = (
+                "/sys/class/power_supply/BAT0"
+            )
+
+            if platform.system() != "Windows":
+
+                capacity_file = (
+                    f"{battery_path}/capacity"
+                )
+
+                status_file = (
+                    f"{battery_path}/status"
+                )
+
+                try:
+
+                    with open(
+                        capacity_file,
+                        "r",
+                        encoding="utf-8",
+                    ) as file:
+                        capacity = file.read().strip()
+
+                    with open(
+                        status_file,
+                        "r",
+                        encoding="utf-8",
+                    ) as file:
+                        status = file.read().strip()
+
+                    return (
+                        f"Battery: {capacity}% "
+                        f"({status})"
+                    )
+
+                except FileNotFoundError:
+
+                    return (
+                        "Battery information is not "
+                        "available through this Linux/WSL environment."
+                    )
+
+            # Windows
+            result = subprocess.run(
+                [
+                    "wmic",
+                    "path",
+                    "Win32_Battery",
+                    "get",
+                    "EstimatedChargeRemaining,"
+                    "BatteryStatus",
+                    "/value",
+                ],
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+
+            values = {}
+
+            for line in result.stdout.splitlines():
+
+                if "=" in line:
+
+                    key, value = line.split(
+                        "=",
+                        1,
+                    )
+
+                    values[key.strip()] = value.strip()
+
+            percentage = values.get(
+                "EstimatedChargeRemaining"
+            )
+
+            status_code = values.get(
+                "BatteryStatus"
+            )
+
+            if percentage:
+
+                status_text = {
+                    "1": "Discharging",
+                    "2": "Charging",
+                    "3": "Fully charged",
+                    "4": "Low",
+                    "5": "Critical",
+                    "6": "Charging",
+                    "7": "Charging",
+                    "8": "Charging",
+                    "9": "Charging",
+                    "10": "Unknown",
+                    "11": "Partially charged",
+                }.get(
+                    status_code,
+                    "Unknown",
+                )
+
+                return (
+                    f"Battery: {percentage}% "
+                    f"({status_text})"
+                )
+
+            return "Battery information unavailable."
+
+        except Exception as error:
+
+            return f"Battery error: {error}"
+
+    # ==========================================================
+    # BRAVE
+    # ==========================================================
+
+    def open_brave(self):
+
+        try:
+
+            # Windows native path
+            windows_brave = (
+                r"C:\Program Files\BraveSoftware"
+                r"\Brave-Browser\Application\brave.exe"
+            )
+
+            # WSL path
+            wsl_brave = (
+                "/mnt/c/Program Files/"
+                "BraveSoftware/"
+                "Brave-Browser/"
+                "Application/"
+                "brave.exe"
+            )
+
+            if platform.system() == "Windows":
+
+                if shutil.which("brave"):
+                    subprocess.Popen(
+                        ["brave"]
+                    )
+                    return "Brave browser opened successfully."
+
+                if shutil.which(windows_brave):
+                    subprocess.Popen(
+                        [windows_brave]
+                    )
+                    return "Brave browser opened successfully."
+
+                return "Brave browser was not found."
+
+            if shutil.which(wsl_brave):
+
+                subprocess.Popen(
+                    [wsl_brave]
+                )
+
+                return "Brave browser opened successfully."
+
+            # WSL can use Windows shell as a fallback.
+            if shutil.which("cmd.exe"):
+
+                subprocess.Popen(
+                    [
+                        "cmd.exe",
+                        "/c",
+                        "start",
+                        "",
+                        "brave",
+                    ]
+                )
+
+                return "Brave browser opened successfully."
+
+            return "Brave browser was not found."
+
+        except Exception as error:
+
+            return f"Could not open Brave: {error}"
+
+    # ==========================================================
+    # MEMORY SAVE
+    # ==========================================================
+
+    def save_memory(self, memory):
+
+        if not memory:
+            return "No memory was provided."
+
+        try:
+
+            self.memory.save(memory)
+
+            return (
+                f"Memory saved successfully: {memory}"
+            )
+
+        except Exception as error:
+
+            return f"Memory save error: {error}"
+
+    # ==========================================================
+    # MEMORY SEARCH
+    # ==========================================================
+
+    def search_memory(self, keyword):
+
+        if not keyword:
+            return "No search keyword was provided."
+
+        try:
+
+            results = self.memory.search(keyword)
+
+            if not results:
+                return "No matching memories found."
+
+            memories = []
+
+            for item in results:
+
+                if item and item[0]:
+
+                    memories.append(
+                        str(item[0])
+                    )
+
+            if not memories:
+                return "No matching memories found."
+
+            return "\n".join(memories)
+
+        except Exception as error:
+
+            return (
+                f"Memory search error: {error}"
+            )
+
+    # ==========================================================
+    # RELEVANT MEMORY RETRIEVAL
+    # ==========================================================
+
+    def get_relevant_memories(self, user_input):
+
+        try:
+
+            results = self.memory.search(
+                user_input
+            )
+
+            if not results:
+                return []
+
+            memories = []
+
+            for item in results[:5]:
+
+                if not item:
+                    continue
+
+                memory_text = str(
+                    item[0]
+                ).strip()
+
+                if (
+                    memory_text
+                    and memory_text not in memories
+                ):
+                    memories.append(
+                        memory_text
+                    )
+
+            return memories
+
+        except Exception as error:
+
+            print(
+                f"⚠️ Memory retrieval failed: {error}"
+            )
+
+            return []
+
+    # ==========================================================
+    # FAST SYSTEM COMMANDS
+    # ==========================================================
+
+    def fast_system_command(self, user_input):
+        """
+        Handle deterministic desktop commands directly.
+
+        This avoids unnecessary model calls for simple
+        requests such as:
+        - What is my CPU?
+        - How much RAM do I have?
+        - Open Brave.
+        """
+
+        text = user_input.lower().strip()
+
+        # ------------------------------------------------------
+        # CPU
+        # ------------------------------------------------------
+
+        if (
+            "what is my cpu" in text
+            or "what's my cpu" in text
+            or "which cpu" in text
+            or "which processor" in text
+            or "what processor" in text
+        ):
+
+            result = self.get_cpu_info()
+
+            return (
+                f"Your CPU is {result}. "
+                "Pretty decent little brain for a laptop. 😎"
+            )
+
+        # ------------------------------------------------------
+        # RAM
+        # ------------------------------------------------------
+
+        if (
+            "how much ram" in text
+            or "how much memory" in text
+            or "what is my ram" in text
+            or "what's my ram" in text
+            or "ram usage" in text
+            or "memory usage" in text
+        ):
+
+            result = self.get_ram_info()
+
+            return (
+                f"Your current RAM status is: {result}."
+            )
+
+        # ------------------------------------------------------
+        # DISK
+        # ------------------------------------------------------
+
+        if (
+            "storage" in text
+            or "disk space" in text
+            or "disk usage" in text
+            or "how much storage" in text
+            or "how much disk" in text
+        ):
+
+            result = self.get_disk_info()
+
+            return (
+                f"Here's your storage status: {result}"
+            )
+
+        # ------------------------------------------------------
+        # OS
+        # ------------------------------------------------------
+
+        if (
+            "what os" in text
+            or "what's my os" in text
+            or "which os" in text
+            or "operating system" in text
+        ):
+
+            result = self.get_os_info()
+
+            return f"You're running {result}."
+
+        # ------------------------------------------------------
+        # BATTERY
+        # ------------------------------------------------------
+
+        if (
+            "battery" in text
+            or "battery level" in text
+            or "battery percentage" in text
+            or "how much battery" in text
+        ):
+
+            result = self.get_battery_info()
+
+            return (
+                f"Your battery status is: {result}"
+            )
+
+        # ------------------------------------------------------
+        # BRAVE
+        # ------------------------------------------------------
+
+        if (
+            "open brave" in text
+            or "open browser" in text
+            or "launch brave" in text
+            or "launch browser" in text
+        ):
+
+            return self.open_brave()
+
+        # ------------------------------------------------------
+        # CALCULATOR
+        # ------------------------------------------------------
+
+        if (
+            "open calculator" in text
+            or "launch calculator" in text
+        ):
+
+            try:
+                return str(
+                    open_calculator()
+                )
+            except Exception as error:
+                return (
+                    f"Could not open Calculator: {error}"
+                )
+
+        # ------------------------------------------------------
+        # NOTEPAD
+        # ------------------------------------------------------
+
+        if (
+            "open notepad" in text
+            or "launch notepad" in text
+        ):
+
+            try:
+                return str(
+                    open_notepad()
+                )
+            except Exception as error:
+                return (
+                    f"Could not open Notepad: {error}"
+                )
+
+        # ------------------------------------------------------
+        # FILE EXPLORER
+        # ------------------------------------------------------
+
+        if (
+            "open file explorer" in text
+            or "open explorer" in text
+            or "launch file explorer" in text
+        ):
+
+            try:
+                return str(
+                    open_file_explorer()
+                )
+            except Exception as error:
+                return (
+                    f"Could not open File Explorer: {error}"
+                )
+
+        # ------------------------------------------------------
+        # COMMAND PROMPT
+        # ------------------------------------------------------
+
+        if (
+            "open command prompt" in text
+            or "open cmd" in text
+            or "launch command prompt" in text
+        ):
+
+            try:
+                return str(
+                    open_command_prompt()
+                )
+            except Exception as error:
+                return (
+                    f"Could not open Command Prompt: {error}"
+                )
+
+        # ------------------------------------------------------
+        # POWERSHELL
+        # ------------------------------------------------------
+
+        if (
+            "open powershell" in text
+            or "launch powershell" in text
+        ):
+
+            try:
+                return str(
+                    open_powershell()
+                )
+            except Exception as error:
+                return (
+                    f"Could not open PowerShell: {error}"
+                )
+
+        return None
+
+    # ==========================================================
+    # TOOL EXECUTION
+    # ==========================================================
+
+    def execute_tool(
+        self,
+        tool_name,
+        arguments=None,
+    ):
+        """Execute a tool requested by the model."""
+
+        if arguments is None:
+            arguments = {}
+
+        # ------------------------------------------------------
+        # SYSTEM INFORMATION
+        # ------------------------------------------------------
+
+        if tool_name == "get_cpu_info":
+            return self.get_cpu_info()
+
+        if tool_name == "get_ram_info":
+            return self.get_ram_info()
+
+        if tool_name == "get_disk_info":
+            return self.get_disk_info()
+
+        if tool_name == "get_os_info":
+            return self.get_os_info()
+
+        if tool_name == "get_battery_info":
+            return self.get_battery_info()
+
+        # ------------------------------------------------------
+        # APPLICATIONS
+        # ------------------------------------------------------
+
+        if tool_name == "open_brave":
+            return self.open_brave()
+
+        if tool_name == "open_calculator":
+
+            try:
+                return open_calculator()
+            except Exception as error:
+                return (
+                    f"Calculator error: {error}"
+                )
+
+        if tool_name == "open_notepad":
+
+            try:
+                return open_notepad()
+            except Exception as error:
+                return (
+                    f"Notepad error: {error}"
+                )
+
+        if tool_name == "open_file_explorer":
+
+            try:
+                return open_file_explorer()
+            except Exception as error:
+                return (
+                    f"File Explorer error: {error}"
+                )
+
+        if tool_name == "open_command_prompt":
+
+            try:
+                return open_command_prompt()
+            except Exception as error:
+                return (
+                    f"Command Prompt error: {error}"
+                )
+
+        if tool_name == "open_powershell":
+
+            try:
+                return open_powershell()
+            except Exception as error:
+                return (
+                    f"PowerShell error: {error}"
+                )
+
+        # ------------------------------------------------------
+        # MEMORY
+        # ------------------------------------------------------
+
+        if tool_name == "save_memory":
+
+            memory = arguments.get(
+                "memory",
+                "",
+            )
+
+            return self.save_memory(memory)
+
+        if tool_name == "search_memory":
+
+            keyword = arguments.get(
+                "keyword",
+                "",
+            )
+
+            return self.search_memory(keyword)
+
+        return f"Unknown tool: {tool_name}"
+
+    # ==========================================================
+    # CLEAN MODEL RESPONSE
+    # ==========================================================
+
+    def clean_response(self, text):
+
+        if not text:
+            return ""
+
+        text = text.strip()
+
+        # Remove Qwen thinking blocks.
+
+        if "</think>" in text:
+
+            text = text.split(
+                "</think>",
+                1,
+            )[1].strip()
+
+        if "<think>" in text:
+
+            text = text.split(
+                "<think>",
+                1,
+            )[0].strip()
+
+        return text
+
+    # ==========================================================
+    # ASK TARS
+    # ==========================================================
+
+    def ask(self, user_input):
+
+        user_input = user_input.strip()
+
+        if not user_input:
+            return ""
+
+        # ------------------------------------------------------
+        # FAST DETERMINISTIC COMMANDS
+        # ------------------------------------------------------
+
+        fast_result = self.fast_system_command(
+            user_input
+        )
+
+        if fast_result is not None:
+
+            # Save memory even if the request is handled
+            # directly by Python.
+            self.check_for_memory(
+                user_input
+            )
+
+            return fast_result
+
+        # ------------------------------------------------------
+        # AUTOMATIC MEMORY SAVE
+        # ------------------------------------------------------
+
+        self.check_for_memory(
+            user_input
+        )
+
+        # ------------------------------------------------------
+        # RETRIEVE RELEVANT MEMORIES
+        # ------------------------------------------------------
+
+        relevant_memories = (
+            self.get_relevant_memories(
+                user_input
+            )
+        )
+
+        # ------------------------------------------------------
+        # CREATE USER MESSAGE
+        # ------------------------------------------------------
+
+        user_content = user_input
+
+        if relevant_memories:
+
+            memory_text = "\n".join(
+                f"- {memory}"
+                for memory in relevant_memories
+            )
+
+            user_content = f"""
+Relevant memories about the user:
+
+{memory_text}
+
+Current user message:
+
+{user_input}
+
+Use these memories when relevant.
+Do not mention the memory system unless necessary.
+"""
+
+            print(
+                "🧠 Relevant memory found."
+            )
+
+        # ------------------------------------------------------
+        # ADD USER MESSAGE
+        # ------------------------------------------------------
+
+        self.messages.append(
+            {
+                "role": "user",
+                "content": user_content,
+            }
+        )
+
+        # ------------------------------------------------------
+        # SELECT MODEL
+        # ------------------------------------------------------
+
+        model = self.choose_model(
+            user_input
+        )
+
+        print(
+            f"🧠 Model: {model}"
+        )
+
+        # ------------------------------------------------------
+        # ASK OLLAMA
+        # ------------------------------------------------------
+
+        try:
+
+            if model == self.fast_model:
+
+                response = ollama.chat(
+                    model=model,
+                    messages=self.messages,
+                    think=False,
+                )
+
+            else:
+
+                response = ollama.chat(
+                    model=model,
+                    messages=self.messages,
+                    tools=self.tools,
+                    think=False,
+                )
+
+        except Exception as error:
+
+            # Remove failed user message so the conversation
+            # history does not become corrupted.
+            if self.messages:
+                last_message = self.messages[-1]
+
+                if (
+                    last_message.get("role")
+                    == "user"
+                ):
+                    self.messages.pop()
+
+            return (
+                f"I couldn't reach the Ollama model. "
+                f"Check that Ollama is running and the model "
+                f"'{model}' is installed.\n\n"
+                f"Error: {error}"
+            )
+
+        # ------------------------------------------------------
+        # TOOL LOOP
+        # ------------------------------------------------------
+
+        while True:
+
+            tool_calls = (
+                response["message"].get(
+                    "tool_calls"
+                )
+            )
+
+            if not tool_calls:
+                break
+
+            assistant_message = (
+                response["message"]
+            )
+
+            self.messages.append(
+                assistant_message
+            )
+
+            for tool_call in tool_calls:
+
+                function = tool_call.get(
+                    "function",
+                    {},
+                )
+
+                tool_name = function.get(
+                    "name",
+                    "",
+                )
+
+                arguments = function.get(
+                    "arguments",
+                    {},
+                )
+
+                # Some Ollama/model versions may return
+                # arguments as a JSON string.
+                if isinstance(
+                    arguments,
+                    str,
+                ):
+
+                    try:
+
+                        import json
+
+                        arguments = json.loads(
+                            arguments
+                        )
+
+                    except Exception:
+
+                        arguments = {}
+
+                print(
+                    f"🔧 Using tool: {tool_name}"
+                )
+
+                try:
+
+                    tool_result = (
+                        self.execute_tool(
+                            tool_name,
+                            arguments,
+                        )
+                    )
+
+                except Exception as error:
+
+                    tool_result = (
+                        f"Tool execution failed: {error}"
+                    )
+
+                self.messages.append(
+                    {
+                        "role": "tool",
+                        "content": str(
+                            tool_result
+                        ),
+                    }
+                )
+
+            # Ask the smart model to interpret the
+            # tool results and produce the final answer.
+
+            try:
+
+                response = ollama.chat(
+                    model=self.smart_model,
+                    messages=self.messages,
+                    tools=self.tools,
+                    think=False,
+                )
+
+            except Exception as error:
+
+                return (
+                    f"The tool ran, but I couldn't "
+                    f"generate the final response.\n\n"
+                    f"Error: {error}"
+                )
+
+        # ------------------------------------------------------
+        # FINAL RESPONSE
+        # ------------------------------------------------------
+
+        response_text = (
+            response["message"].get(
+                "content",
+                "",
+            )
+        )
+
+        response_text = (
+            self.clean_response(
+                response_text
+            )
+        )
+
+        # ------------------------------------------------------
+        # SAVE ASSISTANT RESPONSE
+        # ------------------------------------------------------
+
+        self.messages.append(
+            {
+                "role": "assistant",
+                "content": response_text,
+            }
+        )
+
+        return response_text
+
+
+# ==============================================================
+# TERMINAL MODE
+# ==============================================================
+
+def main():
+
+    tars = TARS()
+
+    print()
+    print("======================================")
+    print("             🤖 TARS ONLINE")
+    print("======================================")
+    print()
+    print(f"Fast model : {tars.fast_model}")
+    print(f"Smart model: {tars.smart_model}")
+    print(f"Memory     : {type(tars.memory).__name__}")
+    print()
+    print(
+        "Tools:"
+    )
+    print(
+        "CPU | RAM | Disk | OS | Battery | "
+        "Brave | Calculator | Notepad | "
+        "Explorer | CMD | PowerShell"
+    )
+    print()
+    print("Type 'exit' to quit.")
+    print()
+
+    while True:
+
+        try:
+
+            user_input = input(
+                "You: "
+            ).strip()
+
+        except KeyboardInterrupt:
+
+            print()
+            print(
+                "TARS: Goodbye."
+            )
+            break
+
+        except EOFError:
+
+            print()
+            print(
+                "TARS: Goodbye."
+            )
+            break
+
+        if not user_input:
+            continue
+
+        if user_input.lower() in {
+            "exit",
+            "quit",
+        }:
+
+            print(
+                "TARS: Goodbye."
+            )
+            break
+
+        try:
+
+            answer = tars.ask(
+                user_input
+            )
+
+            print(
+                "TARS:",
+                answer,
+            )
+
+        except Exception as error:
+
+            print(
+                f"TARS: Something went wrong: {error}"
+            )
+
+
+# ==============================================================
+# PROGRAM ENTRY POINT
+# ==============================================================
+
+if __name__ == "__main__":
+    main()
